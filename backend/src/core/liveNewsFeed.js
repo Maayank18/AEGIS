@@ -22,6 +22,7 @@ let _lastInjectionAt = 0;  // global last injection time
 let _pollCount       = 0;
 let _liveCount       = 0;
 let _fallbackCount   = 0;
+let _nextPollAt      = 0;
 
 const ZONE_KEYWORDS = {
   CP:  ['connaught place', 'central delhi', 'rajiv chowk', 'paharganj'],
@@ -65,6 +66,7 @@ let _fallbackIdx = 0;
 export async function startLiveNewsFeed() {
   logger.success('📡 Live news feed — 5 min rate limit, 1 event max per poll');
   // First poll after 30 seconds (let system stabilise)
+  _nextPollAt = Date.now() + 30_000;
   setTimeout(pollAndInject, 30_000);
   setInterval(pollAndInject, POLL_INTERVAL_MS);
 }
@@ -75,13 +77,14 @@ export function getNewsFeedStats() {
     liveEvents: _liveCount,
     fallbacks: _fallbackCount,
     seenTitles: _seenTitleKeys.size,
-    nextPollIn: Math.max(0, Math.round((POLL_INTERVAL_MS - (Date.now() % POLL_INTERVAL_MS)) / 1000)) + 's',
+    nextPollIn: `${Math.max(0, Math.ceil((_nextPollAt - Date.now()) / 1000))}s`,
   };
 }
 
 // ─── Poll ─────────────────────────────────────────────────────────────────────
 
 async function pollAndInject() {
+  _nextPollAt = Date.now() + POLL_INTERVAL_MS;
   _pollCount++;
   logger.info(`📡 Poll #${_pollCount}`);
 
