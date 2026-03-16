@@ -1,0 +1,259 @@
+{
+  "nodes": [
+    {
+      "id": "CP",
+      "name": "Connaught Place",
+      "lat": 28.6315,
+      "lng": 77.2167,
+      "population": 50000,
+      "zone": "central",
+      "description": "Central business district"
+    },
+    {
+      "id": "RP",
+      "name": "Rajpath / India Gate",
+      "lat": 28.6129,
+      "lng": 77.2295,
+      "population": 20000,
+      "zone": "central",
+      "description": "Government / ceremonial zone"
+    },
+    {
+      "id": "KB",
+      "name": "Karol Bagh",
+      "lat": 28.6518,
+      "lng": 77.1909,
+      "population": 80000,
+      "zone": "west",
+      "description": "Dense commercial and residential"
+    },
+    {
+      "id": "LN",
+      "name": "Lajpat Nagar",
+      "lat": 28.5677,
+      "lng": 77.2433,
+      "population": 70000,
+      "zone": "south",
+      "description": "South Delhi market zone"
+    },
+    {
+      "id": "DW",
+      "name": "Dwarka",
+      "lat": 28.5921,
+      "lng": 77.0460,
+      "population": 90000,
+      "zone": "southwest",
+      "description": "Planned residential township"
+    },
+    {
+      "id": "RH",
+      "name": "Rohini",
+      "lat": 28.7459,
+      "lng": 77.1126,
+      "population": 100000,
+      "zone": "north",
+      "description": "North Delhi residential hub"
+    },
+    {
+      "id": "SD",
+      "name": "Shahdara",
+      "lat": 28.6716,
+      "lng": 77.2916,
+      "population": 85000,
+      "zone": "east",
+      "description": "East Delhi — across the Yamuna"
+    },
+    {
+      "id": "NP",
+      "name": "Nehru Place",
+      "lat": 28.5491,
+      "lng": 77.2511,
+      "population": 40000,
+      "zone": "southeast",
+      "description": "IT and commercial hub"
+    },
+    {
+      "id": "IGI",
+      "name": "IGI Airport",
+      "lat": 28.5562,
+      "lng": 77.0999,
+      "population": 10000,
+      "zone": "southwest",
+      "description": "Indira Gandhi International Airport"
+    },
+    {
+      "id": "OKH",
+      "name": "Okhla",
+      "lat": 28.5355,
+      "lng": 77.2756,
+      "population": 60000,
+      "zone": "southeast",
+      "description": "Industrial and residential area"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "CP",
+      "to": "RP",
+      "weight": 5,
+      "name": "Rajpath Corridor",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e2",
+      "from": "CP",
+      "to": "KB",
+      "weight": 10,
+      "name": "Panchkuian Road",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e3",
+      "from": "CP",
+      "to": "LN",
+      "weight": 15,
+      "name": "Mathura Road",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e4",
+      "from": "CP",
+      "to": "RH",
+      "weight": 20,
+      "name": "NH-9 North Corridor",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e5",
+      "from": "CP",
+      "to": "SD",
+      "weight": 20,
+      "name": "Yamuna Bridge",
+      "blocked": false,
+      "isBridge": true,
+      "bridgeNote": "THE demo collapse point — blocks east-west crossing"
+    },
+    {
+      "id": "e6",
+      "from": "RP",
+      "to": "LN",
+      "weight": 10,
+      "name": "Ring Road South",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e7",
+      "from": "RP",
+      "to": "NP",
+      "weight": 15,
+      "name": "Lodi Road",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e8",
+      "from": "KB",
+      "to": "RH",
+      "weight": 15,
+      "name": "Outer Ring Road NW",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e9",
+      "from": "KB",
+      "to": "DW",
+      "weight": 25,
+      "name": "NH-48 West Corridor",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e10",
+      "from": "LN",
+      "to": "NP",
+      "weight": 10,
+      "name": "Ring Road SE",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e11",
+      "from": "LN",
+      "to": "OKH",
+      "weight": 15,
+      "name": "MB Road",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e12",
+      "from": "NP",
+      "to": "OKH",
+      "weight": 10,
+      "name": "Kalkaji Road",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e13",
+      "from": "DW",
+      "to": "IGI",
+      "weight": 15,
+      "name": "NH-48 Airport Link",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e14",
+      "from": "RH",
+      "to": "SD",
+      "weight": 30,
+      "name": "Outer Ring Road North",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e15",
+      "from": "SD",
+      "to": "LN",
+      "weight": 25,
+      "name": "DND Flyway",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e16",
+      "from": "OKH",
+      "to": "NP",
+      "weight": 10,
+      "name": "Okhla-Nehru Connector",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e17",
+      "from": "IGI",
+      "to": "CP",
+      "weight": 30,
+      "name": "Airport Express Corridor",
+      "blocked": false,
+      "isBridge": false
+    },
+    {
+      "id": "e18",
+      "from": "KB",
+      "to": "CP",
+      "weight": 10,
+      "name": "Panchkuian Road Return",
+      "blocked": false,
+      "isBridge": false
+    }
+  ]
+}

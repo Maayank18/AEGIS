@@ -1,0 +1,26 @@
+{
+  "name": "aegis-backend",
+  "version": "1.0.0",
+  "description": "AEGIS — Autonomous Emergency Grid Intelligence System — Backend",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test:groq": "node src/utils/testGroq.js",
+    "test:tools": "node src/utils/testTools.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.2",
+    "graphology": "^0.25.4",
+    "graphology-shortest-path": "^2.0.1",
+    "groq-sdk": "^0.9.0",
+    "mongoose": "^8.2.0",
+    "uuid": "^9.0.0",
+    "ws": "^8.16.0",
+    "zod": "^3.22.4",
+    "xml2js": "^0.6.2"
+  }
+}

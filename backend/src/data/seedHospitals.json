@@ -1,0 +1,72 @@
+[
+  {
+    "id": "H-1",
+    "name": "AIIMS Delhi",
+    "zone": "RP",
+    "lat": 28.5672,
+    "lng": 77.2100,
+    "totalBeds": 100,
+    "availableBeds": 35,
+    "icuBeds": 20,
+    "availableIcu": 8,
+    "specialties": ["trauma", "cardiac", "neuro", "burns"],
+    "level": "Level-1 Trauma Center",
+    "phone": "+91-11-26588500"
+  },
+  {
+    "id": "H-2",
+    "name": "Safdarjung Hospital",
+    "zone": "CP",
+    "lat": 28.5687,
+    "lng": 77.2068,
+    "totalBeds": 80,
+    "availableBeds": 22,
+    "icuBeds": 15,
+    "availableIcu": 5,
+    "specialties": ["trauma", "burns", "general"],
+    "level": "Level-2 Trauma Center",
+    "phone": "+91-11-26730000"
+  },
+  {
+    "id": "H-3",
+    "name": "GTB Hospital Shahdara",
+    "zone": "SD",
+    "lat": 28.6765,
+    "lng": 77.3054,
+    "totalBeds": 60,
+    "availableBeds": 18,
+    "icuBeds": 10,
+    "availableIcu": 3,
+    "specialties": ["general", "trauma"],
+    "level": "District Hospital",
+    "phone": "+91-11-22582444"
+  },
+  {
+    "id": "H-4",
+    "name": "Deen Dayal Upadhyay Hospital",
+    "zone": "KB",
+    "lat": 28.6454,
+    "lng": 77.1791,
+    "totalBeds": 50,
+    "availableBeds": 12,
+    "icuBeds": 8,
+    "availableIcu": 2,
+    "specialties": ["general", "cardiac"],
+    "level": "District Hospital",
+    "phone": "+91-11-25467993"
+  },
+  {
+    "id": "H-5",
+    "name": "Venkateshwara Hospital Dwarka",
+    "zone": "DW",
+    "lat": 28.5890,
+    "lng": 77.0564,
+    "totalBeds": 45,
+    "availableBeds": 15,
+    "icuBeds": 6,
+    "availableIcu": 4,
+    "specialties": ["general", "cardiac", "ortho"],
+    "level": "Private Trauma Center",
+    "phone": "+91-11-45890000"
+  }
+]
