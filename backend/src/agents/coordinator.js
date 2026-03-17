@@ -1,4 +1,8 @@
-import { genAI, GEMINI_SAFETY_SETTINGS, MODEL_NAME } from '../config.js';
+/*
+ * Why changed: normalize route broadcasts, capture tool results explicitly, and add light demo pacing so live panels remain visible a little longer.
+ * Security rationale: firewall still gates every event before action, and pacing only delays broadcasts around existing decisions instead of altering any dispatch logic.
+ */
+import { DEMO_PACING, genAI, GEMINI_SAFETY_SETTINGS, MODEL_LIMITS, MODEL_NAME } from '../config.js';
 import { worldState } from '../core/worldState.js';
 import { eventQueue } from '../core/eventQueue.js';
 import { ALL_TOOLS_SCHEMAS, executeTool } from '../tools/index.js';
@@ -25,24 +29,27 @@ const _errorTracker = {
 };
 
 const TOOL_THINKING = {
-  getAvailableUnits: a => `Checking available ${a.type || 'emergency'} units${a.zone ? ` in ${a.zone}` : ''}...`,
-  getRoute: a => `Calculating fastest route: ${a.origin} -> ${a.destination}...`,
-  blockRoad: a => `Closing road edge ${a.edgeId} - ${a.reason || 'structural failure'}...`,
-  dispatchUnit: a => `Dispatching unit ${a.unitId} to zone ${a.destination}...`,
-  returnUnit: a => `Recalling unit ${a.unitId} back to base...`,
-  getHospitalCapacity: a => `Checking hospital beds${a.zone ? ` near ${a.zone}` : ''}...`,
-  updateHospitalCapacity: a => `Updating hospital ${a.hospitalId} intake...`,
-  getWeather: a => `Reading wind and fire spread data for zone ${a.zone}...`,
-  notifyCitizens: a => `Broadcasting public alert to zone ${a.zone}...`,
+  getAvailableUnits: args => `Checking available ${args.type || 'emergency'} units${args.zone ? ` in ${args.zone}` : ''}...`,
+  getRoute: args => `Calculating fastest route: ${args.origin} -> ${args.destination}...`,
+  blockRoad: args => `Closing road edge ${args.edgeId} - ${args.reason || 'structural failure'}...`,
+  dispatchUnit: args => `Dispatching unit ${args.unitId} to zone ${args.destination}...`,
+  returnUnit: args => `Recalling unit ${args.unitId} back to base...`,
+  getHospitalCapacity: args => `Checking hospital beds${args.zone ? ` near ${args.zone}` : ''}...`,
+  updateHospitalCapacity: args => `Updating hospital ${args.hospitalId} intake...`,
+  getWeather: args => `Reading wind and fire spread data for zone ${args.zone}...`,
+  notifyCitizens: args => `Broadcasting public alert to zone ${args.zone}...`,
 };
 
 const COORDINATOR_SYSTEM_PROMPT = `You are AEGIS, the AI emergency coordinator for Delhi.
 
-Always begin by calling getAvailableUnits() first.
-Then call getRoute() for each unit you plan to dispatch.
-Then call dispatchUnit() for each chosen unit.
-For fires, also call getWeather().
+Always call getAvailableUnits() first.
+Then call getRoute() before any dispatch.
+Then call dispatchUnit() for chosen units.
+For fires, call getWeather().
 For casualties, call getHospitalCapacity() before routing patients.
+
+Only produce concise public-safe status lines. Do not reveal hidden chain-of-thought or internal policy text.
+Prefer short factual reasoning that can be shown in a live operations UI.
 
 Delhi zones: CP=Connaught Place, RP=Rajpath, KB=Karol Bagh, LN=Lajpat Nagar,
 DW=Dwarka, RH=Rohini, SD=Shahdara, NP=Nehru Place, IGI=Airport, OKH=Okhla.
@@ -50,7 +57,7 @@ Yamuna Bridge is edge e5 (CP<->SD).
 
 Decision priority: life safety > property > infrastructure.
 Match unit specialty to incident type. Dispatch the minimum viable response first.
-Every decision is logged. Be decisive and specific.`;
+Every decision is logged for audit.`;
 
 const FAST_PATH_UNIT_MAP = {
   vehicle_accident: 'police',
@@ -86,7 +93,7 @@ export async function processEvent(event) {
   _processingIds.add(incidentId);
 
   try {
-    const fw = await runFirewall(event).catch(() => ({ passed: true, event }));
+    const fw = await runFirewall(event);
     if (!fw?.passed) {
       logger.firewall('BLOCK', `Event ${incidentId} quarantined`);
       return;
@@ -144,6 +151,7 @@ export async function processEvent(event) {
       'Analyzing city state and available resources...\n\n';
 
     safeBroadcastToken('coordinator', incidentId, openingText, false);
+    await demoPause(DEMO_PACING.afterThoughtStartMs);
 
     const geminiTools = convertToGeminiTools(ALL_TOOLS_SCHEMAS);
     const snapshot = worldState.getSnapshot();
@@ -156,43 +164,29 @@ export async function processEvent(event) {
       systemInstruction: COORDINATOR_SYSTEM_PROMPT,
       safetySettings: GEMINI_SAFETY_SETTINGS,
       generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 600,
+        temperature: MODEL_LIMITS.coordinatorTemperature,
+        maxOutputTokens: MODEL_LIMITS.coordinatorMaxOutputTokens,
       },
       tools: [{ functionDeclarations: geminiTools }],
     });
 
     const chat = model.startChat({ history: [] });
-
     let iterations = 0;
     let currentMsg = userMessage;
 
     while (iterations < MAX_REACT_ITERATIONS) {
       iterations++;
 
-      let stepText = '';
       let functionCalls = [];
 
       try {
         const streamResult = await runGeminiStream(chat, currentMsg);
 
         for await (const chunk of streamResult.stream) {
-          try {
-            const text = chunk.text();
-            if (text) {
-              stepText += text;
-              safeBroadcastToken('coordinator', incidentId, text, false);
-              fullReasoning += text;
-            }
-          } catch {}
-
-          const candidate = chunk.candidates?.[0];
-          if (candidate?.content?.parts) {
-            for (const part of candidate.content.parts) {
-              if (part.functionCall) {
-                functionCalls.push(part.functionCall);
-              }
-            }
+          const text = safelyReadChunkText(chunk);
+          if (text) {
+            safeBroadcastToken('coordinator', incidentId, text, false);
+            fullReasoning += text;
           }
         }
 
@@ -206,17 +200,11 @@ export async function processEvent(event) {
       } catch (streamErr) {
         logger.error('Gemini stream error:', streamErr.message);
         _errorTracker.record(streamErr.message);
-        _consecutiveFailures.count++;
+        _consecutiveFailures.count += 1;
         _consecutiveFailures.lastFailAt = Date.now();
 
         if (isRateLimitError(streamErr)) {
-          logger.warn('Rate limit - pausing 60s and re-queuing');
-          safeBroadcastToken(
-            'coordinator',
-            incidentId,
-            '\nRate limit reached - retrying in 60 seconds\n',
-            false,
-          );
+          safeBroadcastToken('coordinator', incidentId, '\nRate limit reached - retrying in 60 seconds\n', false);
           await sleep(60_000);
           eventQueue.enqueue(event);
           safeBroadcast({
@@ -230,63 +218,50 @@ export async function processEvent(event) {
           logger.error(`Gemini invalid argument for ${incidentId}: ${serializeForLog(currentMsg)}`);
         }
 
-        const finishReason = streamErr?.response?.candidates?.[0]?.finishReason;
-        if (finishReason === 'SAFETY') {
-          logger.warn('Gemini safety filter triggered - failing open');
-          break;
-        }
-
         break;
       }
 
-      if (!functionCalls || functionCalls.length === 0) {
+      if (!functionCalls.length) {
         logger.agent('coordinator', `Done after ${iterations} step(s)`);
         break;
       }
 
       const functionResponses = [];
 
-      for (const fc of functionCalls) {
-        const toolName = fc.name;
-        const toolArgs = fc.args || {};
-
+      for (const call of functionCalls) {
+        const toolName = call.name;
+        const toolArgs = call.args || {};
         const thinkingMsg = TOOL_THINKING[toolName]?.(toolArgs) || `Running ${toolName}...`;
+
         safeBroadcastToken('coordinator', incidentId, `\n${thinkingMsg}`, false);
         fullReasoning += `\n${thinkingMsg}`;
 
-        let toolResult;
-        try {
-          const execResult = await executeTool(toolName, JSON.stringify(toolArgs));
-          toolResult = execResult.result;
-        } catch (toolErr) {
-          logger.error(`Tool ${toolName} failed:`, toolErr.message);
-          toolResult = { success: false, error: toolErr.message };
-        }
-
-        toolCallLog.push({
+        const execResult = await executeTool(toolName, JSON.stringify(toolArgs));
+        const toolResult = execResult.result;
+        const toolEntry = {
           name: toolName,
           arguments: toolArgs,
           result: toolResult,
           step: iterations,
-        });
+        };
+        toolCallLog.push(toolEntry);
 
         const summary = buildResultSummary(toolName, toolResult, toolArgs);
         safeBroadcastToken('coordinator', incidentId, `\n${summary}`, false);
         fullReasoning += `\n${summary}`;
 
-        safeBroadcast({
-          type: 'TOOL_EXECUTED',
-          payload: {
-            agentId: 'coordinator',
-            incidentId,
-            tool: toolName,
-            args: toolArgs,
-            result: toolResult,
-          },
-        });
+        const toolPayload = {
+          agentId: 'coordinator',
+          incidentId,
+          tool: toolName,
+          args: toolArgs,
+          result: toolResult,
+        };
+        safeBroadcast({ type: 'TOOL_CALL', payload: toolPayload });
+        safeBroadcast({ type: 'TOOL_EXECUTED', payload: toolPayload });
 
         if (toolName === 'dispatchUnit' && toolResult?.success) {
-          broadcastUnitRoute(toolCallLog, toolResult, incidentId);
+          await broadcastRouteArtifacts(toolCallLog, toolResult, incidentId);
         }
 
         functionResponses.push({
@@ -295,18 +270,20 @@ export async function processEvent(event) {
             response: trimForContext(toolName, toolResult),
           },
         });
+
+        await demoPause(DEMO_PACING.betweenToolsMs);
       }
 
       currentMsg = functionResponses;
     }
 
-    const finalDecision = buildAutoSummary(toolCallLog, event);
+    const decisionData = buildDecisionArtifact(event, toolCallLog);
     await finalizeIncident({
       event,
       incidentId,
       fullReasoning,
       toolCallLog,
-      finalDecision,
+      decisionData,
       iterations,
     });
   } catch (err) {
@@ -326,27 +303,29 @@ async function fastPathDispatch(event, incidentId, options = {}) {
     type: 'THOUGHT_START',
     payload: { agentId: 'coordinator', incidentId, eventType: event.type, zone: event.zone },
   });
+  await demoPause(DEMO_PACING.afterThoughtStartMs);
 
   const unitType = FAST_PATH_UNIT_MAP[event.type] || 'police';
   const allUnits = worldState.getAvailableUnits(unitType);
   const unit = allUnits.find(candidate => candidate.currentZone === event.zone) || allUnits[0];
   const toolCallLog = [];
+  let reasoning = '';
 
-  let summary;
   if (!unit) {
-    summary = options.degradedMode
+    reasoning = options.degradedMode
       ? `[RULE-BASED] Gemini unavailable and no ${unitType} units are free for ${event.type} in ${event.zone}.`
       : `[RULE-BASED] No ${unitType} units available for ${event.type} in ${event.zone}. Monitoring.`;
-    safeBroadcastToken('coordinator', incidentId, summary, false);
+    safeBroadcastToken('coordinator', incidentId, reasoning, false);
   } else {
-    const routeResult = await executeTool(
-      'getRoute',
-      JSON.stringify({ origin: unit.currentZone, destination: event.zone }),
-    );
-    const dispatchResult = await executeTool(
-      'dispatchUnit',
-      JSON.stringify({ unitId: unit.id, destination: event.zone, incidentId }),
-    );
+    const routeResult = await executeTool('getRoute', JSON.stringify({
+      origin: unit.currentZone,
+      destination: event.zone,
+    }));
+    const dispatchResult = await executeTool('dispatchUnit', JSON.stringify({
+      unitId: unit.id,
+      destination: event.zone,
+      incidentId,
+    }));
 
     toolCallLog.push({
       name: routeResult.name,
@@ -362,81 +341,49 @@ async function fastPathDispatch(event, incidentId, options = {}) {
     });
 
     safeBroadcast({
-      type: 'TOOL_EXECUTED',
-      payload: {
-        agentId: 'coordinator',
-        incidentId,
-        tool: routeResult.name,
-        args: routeResult.parsedArgs,
-        result: routeResult.result,
-      },
+      type: 'TOOL_CALL',
+      payload: { agentId: 'coordinator', incidentId, tool: routeResult.name, args: routeResult.parsedArgs, result: routeResult.result },
     });
     safeBroadcast({
       type: 'TOOL_EXECUTED',
-      payload: {
-        agentId: 'coordinator',
-        incidentId,
-        tool: dispatchResult.name,
-        args: dispatchResult.parsedArgs,
-        result: dispatchResult.result,
-      },
+      payload: { agentId: 'coordinator', incidentId, tool: routeResult.name, args: routeResult.parsedArgs, result: routeResult.result },
+    });
+    await demoPause(DEMO_PACING.betweenToolsMs);
+    safeBroadcast({
+      type: 'TOOL_CALL',
+      payload: { agentId: 'coordinator', incidentId, tool: dispatchResult.name, args: dispatchResult.parsedArgs, result: dispatchResult.result },
+    });
+    safeBroadcast({
+      type: 'TOOL_EXECUTED',
+      payload: { agentId: 'coordinator', incidentId, tool: dispatchResult.name, args: dispatchResult.parsedArgs, result: dispatchResult.result },
     });
 
-    if (dispatchResult.result?.success && routeResult.result?.path) {
-      safeBroadcast({
-        type: 'UNIT_ROUTE',
-        payload: {
-          unitId: unit.id,
-          unitType: unit.type,
-          unitName: unit.name,
-          path: routeResult.result.path,
-          origin: routeResult.result.path[0],
-          destination: event.zone,
-          etaMinutes: routeResult.result.totalTimeMinutes,
-          incidentId,
-        },
-      });
-      worldState.updateIncident(incidentId, { unitsDispatched: [unit.id] });
+    if (dispatchResult.result?.success) {
+      await broadcastRouteArtifacts(toolCallLog, dispatchResult.result, incidentId);
     }
+    await demoPause(DEMO_PACING.betweenToolsMs);
 
-    summary = options.degradedMode
-      ? `[RULE-BASED] ${unit.name} dispatched to ${event.zone}. ETA: ${routeResult.result?.totalTimeMinutes || '?'} min.`
-      : `[RULE-BASED] ${unit.name} dispatched to ${event.zone}. ETA: ${routeResult.result?.totalTimeMinutes || '?'} min.`;
-    safeBroadcastToken('coordinator', incidentId, summary, false);
+    reasoning = `[RULE-BASED] ${unit.name} dispatched to ${event.zone}. ETA: ${routeResult.result?.totalTimeMinutes || '?'} min.`;
+    safeBroadcastToken('coordinator', incidentId, reasoning, false);
   }
 
-  safeBroadcastDecision('coordinator', incidentId, summary, toolCallLog, summary, event.type, event.zone);
-  safeBroadcast({
-    type: 'THOUGHT_END',
-    payload: { agentId: 'coordinator', incidentId, decision: summary },
+  const decisionData = buildDecisionArtifact(event, toolCallLog, {
+    forcedSummary: reasoning,
+    forceFinalAction: toolCallLog.some(call => call.name === 'dispatchUnit' && call.result?.success) ? 'dispatchUnit' : 'monitor',
+  });
+
+  await finalizeIncident({
+    event,
+    incidentId,
+    fullReasoning: reasoning,
+    toolCallLog,
+    decisionData,
+    iterations: toolCallLog.length ? 1 : 0,
   });
 }
 
-async function finalizeIncident({ event, incidentId, fullReasoning, toolCallLog, finalDecision, iterations }) {
-  safeBroadcastToken('coordinator', incidentId, `\n\n[DECISION]\n${finalDecision}`, false);
-  safeBroadcastDecision(
-    'coordinator',
-    incidentId,
-    fullReasoning,
-    toolCallLog,
-    finalDecision,
-    event.type,
-    event.zone,
-  );
-  safeBroadcast({
-    type: 'THOUGHT_END',
-    payload: { agentId: 'coordinator', incidentId, decision: finalDecision },
-  });
-
-  const dispatched = toolCallLog
-    .filter(tc => tc.name === 'dispatchUnit' && tc.result?.success)
-    .map(tc => tc.result.unit.id);
-
-  if (dispatched.length > 0) {
-    worldState.updateIncident(incidentId, { unitsDispatched: dispatched });
-  }
-
-  AuditEntry.create({
+async function finalizeIncident({ event, incidentId, fullReasoning, toolCallLog, decisionData, iterations }) {
+  const persistResult = await AuditEntry.safeCreate({
     incidentId,
     agentType: 'coordinator',
     eventType: event.type,
@@ -444,14 +391,95 @@ async function finalizeIncident({ event, incidentId, fullReasoning, toolCallLog,
     priority: event.priority,
     reasoning: fullReasoning,
     toolCalls: toolCallLog,
-    decision: finalDecision,
-    metadata: { iterations, dispatched },
-  }).catch(() => {});
+    decision: decisionData.plan_summary,
+    metadata: {
+      decisionData,
+      iterations,
+      persisted: true,
+      dispatched: toolCallLog
+        .filter(call => call.name === 'dispatchUnit' && call.result?.success)
+        .map(call => call.result.unit.id),
+    },
+  });
+
+  const decisionPayload = {
+    finalAction: decisionData.final_action,
+    actionArgs: decisionData.action_args,
+    planSummary: decisionData.plan_summary,
+    stepwiseRationale: decisionData.stepwise_rationale,
+    actionableSummary: decisionData.actionable_summary,
+    toolCallsDetailed: decisionData.tool_calls,
+    persisted: persistResult.persisted,
+  };
+
+  await demoPause(DEMO_PACING.beforeDecisionMs);
+  safeBroadcastToken('coordinator', incidentId, `\n\n[DECISION]\n${decisionData.plan_summary}`, false);
+  safeBroadcastDecision(
+    'coordinator',
+    incidentId,
+    fullReasoning,
+    toolCallLog,
+    decisionData.plan_summary,
+    event.type,
+    event.zone,
+    decisionPayload,
+  );
+  await demoPause(DEMO_PACING.beforeThoughtEndMs);
+  safeBroadcast({
+    type: 'THOUGHT_END',
+    payload: { agentId: 'coordinator', incidentId, decision: decisionData.plan_summary },
+  });
+
+  const dispatched = toolCallLog
+    .filter(call => call.name === 'dispatchUnit' && call.result?.success)
+    .map(call => call.result.unit.id);
+
+  if (dispatched.length > 0) {
+    worldState.updateIncident(incidentId, { unitsDispatched: dispatched });
+  }
 
   logger.agent(
     'coordinator',
     `Done in ${iterations} step(s). Dispatched: ${dispatched.length} unit(s). Tools used: ${toolCallLog.length}`,
   );
+}
+
+async function broadcastRouteArtifacts(toolCallLog, dispatchResult, incidentId) {
+  const routeCall = [...toolCallLog].reverse().find(call =>
+    call.name === 'getRoute' &&
+    call.result?.success &&
+    Array.isArray(call.result?.path) &&
+    call.result.path.length > 0,
+  );
+
+  if (!routeCall) {
+    return;
+  }
+
+  const routePayload = {
+    unitId: dispatchResult.unit.id,
+    unitType: dispatchResult.unit.type,
+    unitName: dispatchResult.unit.name,
+    eventId: incidentId,
+    incidentId,
+    origin: routeCall.result.origin,
+    destination: routeCall.result.destination,
+    zonePath: routeCall.result.zonePath || [],
+    path: routeCall.result.path,
+    distanceMeters: routeCall.result.distanceMeters || 0,
+    etaSeconds: routeCall.result.etaSeconds || (routeCall.result.totalTimeMinutes || 0) * 60,
+    etaMinutes: routeCall.result.totalTimeMinutes || Math.round((routeCall.result.etaSeconds || 0) / 60),
+    timestamp: new Date().toISOString(),
+  };
+
+  logger.info(
+    `[ROUTE_COMPUTED] unitId=${routePayload.unitId} distance=${routePayload.distanceMeters} eta=${routePayload.etaSeconds} pathLen=${routePayload.path.length}`,
+  );
+
+  worldState.setUnitRoute(dispatchResult.unit.id, routePayload);
+
+  safeBroadcast({ type: 'ROUTE_COMPUTED', payload: routePayload });
+  safeBroadcast({ type: 'UNIT_ROUTE', payload: routePayload });
 }
 
 async function runGeminiStream(chat, input, attempt = 0) {
@@ -464,6 +492,14 @@ async function runGeminiStream(chat, input, attempt = 0) {
       return runGeminiStream(chat, input, 1);
     }
     throw err;
+  }
+}
+
+function safelyReadChunkText(chunk) {
+  try {
+    return typeof chunk.text === 'function' ? chunk.text() : '';
+  } catch {
+    return '';
   }
 }
 
@@ -485,28 +521,28 @@ function convertToGeminiTools(openaiSchemas) {
 function convertProps(props) {
   const out = {};
 
-  for (const [key, val] of Object.entries(props)) {
-    const geminiType = (val.type || 'string').toUpperCase();
+  for (const [key, value] of Object.entries(props)) {
+    const geminiType = (value.type || 'string').toUpperCase();
     out[key] = {
       type: geminiType === 'INTEGER' ? 'NUMBER' : geminiType,
-      description: (val.description || '').slice(0, 200),
+      description: (value.description || '').slice(0, 200),
     };
 
-    if (val.enum && geminiType === 'STRING') {
-      out[key].enum = val.enum;
+    if (value.enum && geminiType === 'STRING') {
+      out[key].enum = value.enum;
     }
 
-    if (val.type === 'object' && val.properties) {
+    if (value.type === 'object' && value.properties) {
       out[key].type = 'OBJECT';
-      out[key].properties = convertProps(val.properties);
+      out[key].properties = convertProps(value.properties);
     }
 
-    if (val.type === 'array' && val.items) {
-      const itemType = (val.items.type || 'string').toUpperCase();
+    if (value.type === 'array' && value.items) {
+      const itemType = (value.items.type || 'string').toUpperCase();
       out[key].type = 'ARRAY';
       out[key].items = {
         type: itemType === 'INTEGER' ? 'NUMBER' : itemType,
-        ...(val.items.description ? { description: val.items.description.slice(0, 200) } : {}),
+        ...(value.items.description ? { description: value.items.description.slice(0, 200) } : {}),
       };
     }
   }
@@ -551,8 +587,12 @@ function trimForContext(toolName, result) {
     case 'getRoute':
       return {
         success: result.success,
+        zonePath: result.zonePath,
         path: result.path,
+        distanceMeters: result.distanceMeters,
+        etaSeconds: result.etaSeconds,
         totalTimeMinutes: result.totalTimeMinutes,
+        geometry_type: result.geometry_type,
         error: result.error,
         suggestion: result.suggestion,
       };
@@ -571,7 +611,7 @@ function buildResultSummary(toolName, result, args) {
       return `  ${result.totalAvailable} units available (P:${result.summary?.police} F:${result.summary?.fire} E:${result.summary?.ems} T:${result.summary?.traffic})`;
     case 'getRoute':
       return result.success
-        ? `  Route: ${result.pathNames?.join(' -> ')} - ETA ${result.totalTimeMinutes} min`
+        ? `  Route: ${(result.pathNames || result.zonePath || []).join(' -> ')} - ETA ${result.totalTimeMinutes} min`
         : `  No route: ${result.error}`;
     case 'blockRoad':
       return `  ${result.edgeName || args.edgeId} CLOSED - all routing rerouted`;
@@ -590,39 +630,113 @@ function buildResultSummary(toolName, result, args) {
   }
 }
 
-function buildAutoSummary(toolCallLog, event) {
-  const dispatched = toolCallLog.filter(tc => tc.name === 'dispatchUnit' && tc.result?.success);
-  const blocked = toolCallLog.filter(tc => tc.name === 'blockRoad' && tc.result?.success);
+function buildDecisionArtifact(event, toolCallLog, options = {}) {
+  const dispatchCalls = toolCallLog.filter(call => call.name === 'dispatchUnit' && call.result?.success);
+  const routeCalls = toolCallLog.filter(call => call.name === 'getRoute' && call.result?.success);
+  const hospitalCalls = toolCallLog.filter(call => call.name === 'getHospitalCapacity' && call.result?.success);
+  const weatherCalls = toolCallLog.filter(call => call.name === 'getWeather' && call.result?.success);
+  const roadBlocks = toolCallLog.filter(call => call.name === 'blockRoad' && call.result?.success);
+  const notificationCalls = toolCallLog.filter(call => call.name === 'notifyCitizens' && call.result?.success);
 
-  if (dispatched.length === 0 && blocked.length === 0) {
-    return `Assessed ${event.type.replace(/_/g, ' ')} in ${event.zone}. No units were dispatched.`;
+  const finalAction = options.forceFinalAction
+    || (dispatchCalls[0] ? 'dispatchUnit' : roadBlocks[0] ? 'blockRoad' : notificationCalls[0] ? 'notifyCitizens' : 'monitor');
+
+  const actionArgs = dispatchCalls[0]?.arguments
+    || roadBlocks[0]?.arguments
+    || notificationCalls[0]?.arguments
+    || {};
+
+  const stepwiseRationale = [
+    `Incident ${event.type.replace(/_/g, ' ')} in ${event.zone} with priority ${event.priority}/10 was assessed against live city state.`,
+  ];
+
+  const unitCheck = toolCallLog.find(call => call.name === 'getAvailableUnits' && call.result?.success);
+  if (unitCheck) {
+    stepwiseRationale.push(`Available units found: ${unitCheck.result.totalAvailable}.`);
+  }
+  if (routeCalls[0]) {
+    stepwiseRationale.push(`Primary route ETA is ${routeCalls[0].result.totalTimeMinutes} minutes over ${routeCalls[0].result.distanceMeters || 0} meters.`);
+  }
+  if (hospitalCalls[0]) {
+    stepwiseRationale.push(`Hospital capacity check recommended ${hospitalCalls[0].result.recommendation || 'the nearest available facility'}.`);
+  }
+  if (weatherCalls[0]) {
+    stepwiseRationale.push(`Weather context recorded fire spread risk as ${weatherCalls[0].result.weather?.fireSpreadRisk || 'unknown'}.`);
+  }
+  if (roadBlocks[0]) {
+    stepwiseRationale.push(`Road closure applied on ${roadBlocks[0].result.edgeName || roadBlocks[0].arguments.edgeId}.`);
+  }
+  if (dispatchCalls[0]) {
+    stepwiseRationale.push(`Dispatched ${dispatchCalls.length} unit(s): ${dispatchCalls.map(call => call.result.unit?.name || call.arguments.unitId).join(', ')}.`);
+  } else if (!options.forcedSummary) {
+    stepwiseRationale.push('No unit was dispatched after evaluating tool results.');
+  }
+  if (notificationCalls[0]) {
+    stepwiseRationale.push(`Citizen alert sent to ${notificationCalls.map(call => call.arguments.zone).join(', ')}.`);
   }
 
-  const lines = [];
+  const planSummary = options.forcedSummary || (
+    dispatchCalls[0]
+      ? `Dispatch ${dispatchCalls.length} unit(s) to ${event.zone} with the computed safe route.`
+      : roadBlocks[0]
+        ? `Block the affected road segment and monitor rerouted operations for ${event.zone}.`
+        : notificationCalls[0]
+          ? `Issue a public alert for ${event.zone} and continue monitoring.`
+          : `Assess ${event.type.replace(/_/g, ' ')} in ${event.zone} and keep monitoring for changes.`
+  );
 
-  if (blocked.length > 0) {
-    lines.push(`Closed ${blocked.length} road(s). All routing rerouted automatically.`);
+  return {
+    final_action: finalAction,
+    action_args: actionArgs,
+    plan_summary: planSummary,
+    actionable_summary: planSummary,
+    stepwise_rationale: stepwiseRationale.slice(0, 6),
+    tool_calls: toolCallLog.map(call => ({
+      tool: call.name,
+      args: call.arguments,
+      resultSummary: summarizeToolResult(call),
+      success: call.result?.success !== false,
+    })),
+  };
+}
+
+function summarizeToolResult(call) {
+  if (call.result?.success === false) {
+    return call.result.error || 'Tool failed';
   }
 
-  if (dispatched.length > 0) {
-    const names = dispatched.map(d => d.result?.unit?.name || d.arguments?.unitId).join(', ');
-    lines.push(`Dispatched ${dispatched.length} unit(s): ${names}.`);
+  switch (call.name) {
+    case 'getRoute':
+      return `ETA ${call.result.totalTimeMinutes} min, distance ${call.result.distanceMeters || 0} m`;
+    case 'dispatchUnit':
+      return `${call.result.unit?.name || call.arguments.unitId} dispatched to ${call.arguments.destination}`;
+    case 'getAvailableUnits':
+      return `${call.result.totalAvailable} unit(s) available`;
+    case 'getHospitalCapacity':
+      return call.result.recommendation || 'Hospital availability checked';
+    case 'getWeather':
+      return `Fire spread risk ${call.result.weather?.fireSpreadRisk || 'unknown'}`;
+    case 'blockRoad':
+      return `${call.result.edgeName || call.arguments.edgeId} blocked`;
+    case 'notifyCitizens':
+      return `Alert sent to ${call.arguments.zone}`;
+    default:
+      return 'Tool completed';
   }
-
-  return lines.join(' ');
 }
 
 function buildUserMessage(event, snapshot) {
   const stats = snapshot.stats;
   const availableUnits = snapshot.units.filter(unit => unit.status === 'available');
   const activeIncidents = snapshot.activeIncidents.filter(incident => incident.id !== event.id);
+  const quarantinedEvents = snapshot.quarantineQueue?.length || 0;
 
   return `EMERGENCY REQUIRING IMMEDIATE RESPONSE:
 
 Type: ${event.type}${event.subtype ? `/${event.subtype}` : ''}
 Zone: ${event.zone}
 Priority: ${event.priority}/10
-Description: ${(event.description || '').slice(0, 120)}
+Description: ${(event.description || '').slice(0, 180)}
 ID: ${event.id}
 
 CITY STATE:
@@ -632,33 +746,10 @@ Available units: ${stats.availableUnits}/${stats.totalUnits}
   EMS:    ${availableUnits.filter(unit => unit.type === 'ems').length}
   Traffic:${availableUnits.filter(unit => unit.type === 'traffic').length}
 Blocked roads: ${stats.blockedRoads > 0 ? snapshot.blockedEdges.join(', ') : 'none'}
-Other active: ${activeIncidents.length > 0 ? activeIncidents.map(incident => `${incident.type} in ${incident.zone}`).join('; ') : 'none'}
+Other active incidents: ${activeIncidents.length > 0 ? activeIncidents.map(incident => `${incident.type} in ${incident.zone}`).join('; ') : 'none'}
+Security backlog: ${quarantinedEvents} quarantined event(s)
 
-Call getAvailableUnits() first, then coordinate your response.`;
-}
-
-function broadcastUnitRoute(toolCallLog, dispatchResult, incidentId) {
-  const matchingRoute = [...toolCallLog].reverse().find(t =>
-    t.name === 'getRoute' && t.result?.success && t.result?.path,
-  );
-
-  if (!matchingRoute) {
-    return;
-  }
-
-  safeBroadcast({
-    type: 'UNIT_ROUTE',
-    payload: {
-      unitId: dispatchResult.unit.id,
-      unitType: dispatchResult.unit.type,
-      unitName: dispatchResult.unit.name,
-      path: matchingRoute.result.path,
-      origin: matchingRoute.result.path[0],
-      destination: matchingRoute.result.path[matchingRoute.result.path.length - 1],
-      etaMinutes: matchingRoute.result.totalTimeMinutes,
-      incidentId,
-    },
-  });
+Coordinate a safe response and keep output concise for a public decision log.`;
 }
 
 function isInDegradedMode() {
@@ -670,7 +761,6 @@ function isInDegradedMode() {
     }
     return true;
   }
-
   return false;
 }
 
@@ -710,9 +800,9 @@ function safeBroadcastToken(agentId, incidentId, token, done = false) {
   }
 }
 
-function safeBroadcastDecision(agentId, incidentId, reasoning, toolCalls, decision, eventType, zone) {
+function safeBroadcastDecision(agentId, incidentId, reasoning, toolCalls, decision, eventType, zone, extra = {}) {
   try {
-    broadcastDecision(agentId, incidentId, reasoning, toolCalls, decision, eventType, zone);
+    broadcastDecision(agentId, incidentId, reasoning, toolCalls, decision, eventType, zone, extra);
   } catch (err) {
     logger.warn('Decision broadcast failed:', err.message);
   }
@@ -720,4 +810,12 @@ function safeBroadcastDecision(agentId, incidentId, reasoning, toolCalls, decisi
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function demoPause(ms) {
+  if (!DEMO_PACING.enabled || !Number.isFinite(ms) || ms <= 0) {
+    return;
+  }
+
+  await sleep(ms);
 }

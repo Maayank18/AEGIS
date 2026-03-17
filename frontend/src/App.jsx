@@ -1,3 +1,7 @@
+/*
+ * Why changed: align the Security explainer copy with the Gemini-based fail-safe firewall.
+ * Security rationale: the UI text now matches the actual scorer behavior that operators are validating during demo runs.
+ */
 import { useState } from 'react';
 import { useSocket }    from './store/useSocket.js';
 import { useWorldStore } from './store/useWorldStore.js';
@@ -232,7 +236,7 @@ function SecurityView() {
           <div style={{ fontSize:'13px', fontWeight:'600', color:'var(--c-cyan)', marginBottom:'12px', letterSpacing:'0.06em', textTransform:'uppercase' }}>Firewall Explained</div>
           {[
             ['rgba(255,59,92,0.08)','rgba(255,59,92,0.2)','#ff3b5c','Layer 1 — Pattern Matching (<1ms)','Checks every 911 call against known injection phrases. "Ignore all previous instructions" → instant block. No AI call needed.'],
-            ['rgba(255,107,53,0.08)','rgba(255,107,53,0.2)','#ff6b35','Layer 2 — AI Threat Scorer (100-400ms)','Ambiguous inputs go to a second Groq call that scores 0-10. Score ≥ 7.0 = quarantined. Score < 7.0 = forwarded to coordinator.'],
+            ['rgba(255,107,53,0.08)','rgba(255,107,53,0.2)','#ff6b35','Layer 2 — AI Threat Scorer (100-400ms)','Ambiguous inputs go to a Gemini security scorer that returns structured risk JSON. Score ≥ 7.0 = quarantined. Score < 7.0 = forwarded to coordinator.'],
             ['rgba(168,85,247,0.08)','rgba(168,85,247,0.2)','#a855f7','Why this matters for judges','In a real city system, someone could call 911 to manipulate the AI dispatcher. AEGIS catches it. No other hackathon team will demo this live.'],
           ].map(([bg,border,color,title,text],i) => (
             <div key={i} style={{ padding:'10px',background:bg,border:`1px solid ${border}`,borderRadius:'7px',marginBottom:'10px' }}>

@@ -1,3 +1,7 @@
+/*
+ * Why changed: subscribe to the new route and quarantine events while logging every incoming frame for verification.
+ * Security rationale: the UI now consumes both live firewall blocks and route-computed/unit-update frames without silent drops.
+ */
 import { useEffect, useRef } from 'react';
 import { useWorldStore } from './useWorldStore.js';
 
@@ -44,7 +48,9 @@ export function useSocket() {
 
       ws.onmessage = evt => {
         try {
-          route(JSON.parse(evt.data), useWorldStore.getState());
+          const msg = JSON.parse(evt.data);
+          console.debug('[WS IN]', msg.type, msg.payload);
+          route(msg, useWorldStore.getState());
         } catch {}
       };
     } catch { reconnectRef.current = setTimeout(connect, 3000); }
@@ -58,13 +64,27 @@ function route(msg, s) {
     case 'SYSTEM_RESET':       s.resetState(); break;
 
     case 'UNIT_DISPATCHED':
-    case 'UNIT_ZONE_UPDATED':  s.upsertUnit(payload); break;
+    case 'UNIT_ZONE_UPDATED':
+    case 'UNIT_UPDATE':
+      s.upsertUnit(payload);
+      if (payload.currentRoute?.path?.length) {
+        s.setUnitRoute({
+          ...payload.currentRoute,
+          unitId: payload.id,
+          unitType: payload.type,
+          unitName: payload.name,
+        });
+      }
+      break;
     case 'UNIT_RETURNED':
       s.upsertUnit(payload);
       s.clearUnitRoute(payload.id); // remove route line when unit returns
       break;
 
-    case 'UNIT_ROUTE':         s.setUnitRoute(payload); break;
+    case 'UNIT_ROUTE':
+    case 'ROUTE_COMPUTED':
+      s.setUnitRoute(payload);
+      break;
 
     case 'INCIDENT_RECEIVED':  s.addIncident(payload); break;
     case 'INCIDENT_CREATED':   break; // suppressed — RECEIVED fires same event
@@ -73,7 +93,10 @@ function route(msg, s) {
     case 'THOUGHT_START':
     case 'SUBAGENT_START':     s.startThought(payload); break;
     case 'THOUGHT_TOKEN':      s.appendToken(payload); break;
-    case 'TOOL_EXECUTED':      s.addToolCall(payload); break;
+    case 'TOOL_CALL':
+    case 'TOOL_EXECUTED':
+      s.addToolCall(payload);
+      break;
 
     case 'THOUGHT_END':
     case 'SUBAGENT_COMPLETE': {
@@ -103,7 +126,12 @@ function route(msg, s) {
     case 'FIREWALL_BLOCK':
       s.addSecurityEvent({ ...payload, eventType: 'FIREWALL_BLOCK' });
       break;
-    case 'FIREWALL_PASS':      break; // suppressed
+    case 'QUARANTINE_UPDATED':
+      s.addSecurityEvent({ ...payload, eventType: 'FIREWALL_BLOCK' });
+      break;
+    case 'FIREWALL_PASS':
+      s.addSecurityEvent({ ...payload, eventType: 'FIREWALL_PASS' });
+      break;
 
     case 'EDGE_BLOCKED':
       s.blockEdge(payload.edgeId);

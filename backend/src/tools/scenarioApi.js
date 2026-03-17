@@ -1,3 +1,7 @@
+/*
+ * Why changed: reset now clears in-memory quarantine state so manual security tests start from a clean baseline.
+ * Security rationale: repeated firewall demos no longer show stale quarantines from previous runs.
+ */
 import { Router } from 'express';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -96,6 +100,7 @@ router.post('/reset', (req, res) => {
   worldState.getUnitsByStatus('dispatched').forEach(u => worldState.returnUnit(u.id));
   worldState.getBlockedEdges().forEach(edgeId => worldState.unblockEdge(edgeId));
   worldState.getActiveIncidents().forEach(i => worldState.resolveIncident(i.id));
+  worldState.clearQuarantineQueue();
   eventQueue.clear();
   broadcast({ type: 'SYSTEM_RESET', payload: { timestamp: new Date().toISOString() } });
   logger.success('System reset complete');

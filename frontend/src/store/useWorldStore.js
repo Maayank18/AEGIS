@@ -1,3 +1,7 @@
+/*
+ * Why changed: normalize live route payloads and hydrate security memory state from the backend snapshot.
+ * Security rationale: route and quarantine visibility no longer depends on legacy payload assumptions or MongoDB-only data.
+ */
 import { create } from 'zustand';
 
 export const ZONE_META = {
@@ -35,6 +39,28 @@ function securityEventKey(ev) {
   return null;
 }
 
+function normalizeRoutePath(path = []) {
+  return (path || [])
+    .map(point => {
+      if (Array.isArray(point)) {
+        const [first, second] = point;
+        const looksLikeLngLat = Math.abs(first) > 60 && Math.abs(second) < 60;
+        return looksLikeLngLat ? { lat: second, lng: first } : { lat: first, lng: second };
+      }
+      if (typeof point === 'string' && ZONE_META[point]) {
+        const zone = ZONE_META[point];
+        return { lat: zone.lat, lng: zone.lng, zone: point, name: zone.name };
+      }
+      return {
+        lat: point?.lat ?? point?.latitude,
+        lng: point?.lng ?? point?.longitude,
+        ...(point?.zone ? { zone: point.zone } : {}),
+        ...(point?.name ? { name: point.name } : {}),
+      };
+    })
+    .filter(point => typeof point.lat === 'number' && typeof point.lng === 'number');
+}
+
 export const useWorldStore = create((set, get) => ({
   connected:      false,
   units:          [],
@@ -62,6 +88,25 @@ export const useWorldStore = create((set, get) => ({
     incidents:    snapshot.activeIncidents || [],
     hospitals:    snapshot.hospitals       || [],
     blockedEdges: snapshot.blockedEdges    || [],
+    securityFeed: (snapshot.quarantineQueue || []).map(entry => ({
+      ...entry,
+      eventType: entry.eventType || 'FIREWALL_BLOCK',
+      _key: securityEventKey(entry) || `${entry.eventId || 'quarantine'}:${entry.timestamp || entry.queuedAt || Date.now()}`,
+    })),
+    unitRoutes: Object.fromEntries(
+      (snapshot.units || [])
+        .filter(unit => unit.currentRoute?.path?.length)
+        .map(unit => [
+          unit.id,
+          {
+            ...unit.currentRoute,
+            unitId: unit.id,
+            unitType: unit.type,
+            unitName: unit.name,
+            path: normalizeRoutePath(unit.currentRoute.path),
+          },
+        ]),
+    ),
     stats:        snapshot.stats          || {},
   }),
 
@@ -229,14 +274,23 @@ export const useWorldStore = create((set, get) => ({
 
   // ── Security ───────────────────────────────────────────────────────────────
   addSecurityEvent: ev => set(state => {
-    if (ev.eventType === 'FIREWALL_PASS') return {};
     const key = securityEventKey(ev);
-    if (key && state.securityFeed.some(e => securityEventKey(e) === key)) return {};
+    const nextEvent = {
+      ...ev,
+      _key: key || `${ev.eventType || 'security'}-${Date.now()}`,
+    };
+
+    if (key) {
+      const idx = state.securityFeed.findIndex(existing => securityEventKey(existing) === key);
+      if (idx !== -1) {
+        const list = [...state.securityFeed];
+        list[idx] = { ...list[idx], ...nextEvent };
+        return { securityFeed: list };
+      }
+    }
+
     return {
-      securityFeed: [{
-        ...ev,
-        _key: key || `${ev.eventType || 'security'}-${Date.now()}`,
-      }, ...state.securityFeed].slice(0, 10),
+      securityFeed: [nextEvent, ...state.securityFeed].slice(0, 15),
     };
   }),
 
@@ -273,7 +327,13 @@ export const useWorldStore = create((set, get) => ({
   }),
 
   setUnitRoute: route => set(s => ({
-    unitRoutes: { ...s.unitRoutes, [route.unitId]: route },
+    unitRoutes: {
+      ...s.unitRoutes,
+      [route.unitId]: {
+        ...route,
+        path: normalizeRoutePath(route.path),
+      },
+    },
   })),
 
   clearUnitRoute: unitId => set(s => {

@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "test": "node --test \"tests/*.test.js\"",
     "test:gemini": "node src/utils/testGroq.js",
     "test:tools": "node src/utils/testTools.js"
   },

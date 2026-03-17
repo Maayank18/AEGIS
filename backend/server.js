@@ -1,3 +1,7 @@
+/*
+ * Why changed: expose quarantine memory state and a direct simulation endpoint so security and routing checks hit the same server ingress used in the demo.
+ * Security rationale: operators can verify blocked events and route frames even if MongoDB is unavailable.
+ */
 /**
  * AEGIS — Autonomous Emergency Grid Intelligence System
  * ─────────────────────────────────────────────────────────────────────────────
@@ -80,6 +84,29 @@ app.get('/api/audit', async (req, res) => {
 // News feed stats
 app.get('/api/news/stats', (req, res) => {
   res.json({ success: true, ...getNewsFeedStats() });
+});
+
+app.get('/api/security/quarantine', (req, res) => {
+  res.json({
+    success: true,
+    count: worldState.getQuarantineQueue().length,
+    entries: worldState.getQuarantineQueue(),
+  });
+});
+
+app.post('/api/simulate/event', (req, res) => {
+  const event = {
+    ...req.body,
+    id: req.body.id || `sim-${Date.now()}`,
+    _source: req.body._source || 'manual_simulation',
+  };
+
+  if (!event.type || !event.description) {
+    return res.status(400).json({ success: false, error: 'Required: type, description' });
+  }
+
+  eventQueue.enqueue(event);
+  res.json({ success: true, eventId: event.id, queueSize: eventQueue.size });
 });
 
 // ─── WebSocket Server ─────────────────────────────────────────────────────────
